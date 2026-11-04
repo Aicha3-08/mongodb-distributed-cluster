@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  shard1:
+    image: mongo:7.0
+    container_name: shard1_secondary
+    command: mongod --shardsvr --replSet shard1rs --bind_ip_all --port 27018
+    network_mode: "host"
+    restart: always

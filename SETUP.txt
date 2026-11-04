@@ -1,0 +1,291 @@
+═══════════════════════════════════════════════════════════════════════════════
+                       MONGODB CLUSTER SETUP - 3 PCs
+═══════════════════════════════════════════════════════════════════════════════
+
+This file contains EVERYTHING you need to do on each PC.
+
+═══════════════════════════════════════════════════════════════════════════════
+                              PC 1 (YOUR PC)
+                         Arch Linux - 172.20.10.4
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT TO PUT ON PC 1:
+  • docker-compose.yml
+  • demarrer.sh
+  • tester-failover.sh
+
+STEP 1: CREATE THE FILES
+───────────────────────
+
+Create docker-compose.yml with:
+
+version: '3.8'
+
+networks:
+  mongo-net:
+    driver: bridge
+
+volumes:
+  configdb:
+  shard1:
+
+services:
+  config:
+    image: mongo:7.0
+    container_name: config
+    command: mongod --configsvr --replSet csrs --bind_ip_all --port 27019
+    volumes:
+      - configdb:/data/db
+    ports:
+      - "27019:27019"
+    networks:
+      - mongo-net
+    restart: always
+
+  mongos:
+    image: mongo:7.0
+    container_name: mongos
+    command: mongos --configdb csrs/config:27019 --bind_ip_all --port 27017
+    ports:
+      - "27017:27017"
+    networks:
+      - mongo-net
+    depends_on:
+      - config
+    restart: always
+
+  shard1:
+    image: mongo:7.0
+    container_name: shard1
+    command: mongod --shardsvr --replSet shard1rs --bind_ip_all --port 27018
+    volumes:
+      - shard1:/data/db
+    ports:
+      - "27018:27018"
+    networks:
+      - mongo-net
+    restart: always
+
+
+Create demarrer.sh with:
+
+#!/bin/bash
+echo "🚀 Starting cluster..."
+docker-compose up -d
+sleep 10
+
+echo "⏳ Init config server..."
+docker exec config mongosh --eval 'rs.initiate({_id:"csrs", members:[{_id:0, host:"config:27019"}]})'
+sleep 3
+
+echo "⏳ Init shard 1..."
+docker exec shard1 mongosh --eval 'rs.initiate({_id:"shard1rs", members:[{_id:0, host:"shard1:27018"}]})'
+sleep 3
+
+echo "⏳ Configure mongos..."
+docker exec mongos mongosh --eval 'sh.addShard("shard1rs/shard1:27018")'
+
+echo ""
+echo "✅ CLUSTER STARTED!"
+echo ""
+echo "Connect to mongosh:"
+echo "  docker exec -it mongos mongosh"
+echo ""
+echo "Add PC 2:"
+echo "  > rs.add({host: \"172.20.10.5:27018\", priority: 5})"
+echo ""
+echo "Add PC 3:"
+echo "  > rs.add({host: \"172.20.10.6:27018\", priority: 5})"
+
+
+Create tester-failover.sh with:
+
+#!/bin/bash
+echo "Testing failover..."
+
+echo "1. Insert data..."
+docker exec mongos mongosh --eval 'use testdb; db.test.insertMany([{_id:1, msg:"test1"}, {_id:2, msg:"test2"}])'
+
+echo "2. Stop primary..."
+docker stop shard1
+sleep 15
+
+echo "3. Restart primary..."
+docker start shard1
+sleep 10
+
+echo "4. Check data..."
+docker exec mongos mongosh --eval 'use testdb; db.test.find().pretty()'
+
+echo "✅ FAILOVER TEST DONE!"
+
+
+STEP 2: MAKE FILES EXECUTABLE
+──────────────────────────────
+
+chmod +x demarrer.sh
+chmod +x tester-failover.sh
+
+
+STEP 3: START THE CLUSTER
+──────────────────────────
+
+./demarrer.sh
+
+
+STEP 4: WAIT FOR PC 2 AND PC 3 TO START
+────────────────────────────────────────
+
+Once they are running, connect to mongosh and add them:
+
+docker exec -it mongos mongosh
+
+Then:
+
+> rs.add({host: "172.20.10.5:27018", priority: 5})
+> rs.add({host: "172.20.10.6:27018", priority: 5})
+> rs.status()
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         PC 2 (WINDOWS - 172.20.10.5)
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT TO PUT ON PC 2:
+  • docker-compose.windows.yml
+
+
+STEP 1: INSTALL DOCKER DESKTOP
+───────────────────────────────
+
+1. Go to: https://www.docker.com/products/docker-desktop
+2. Download and install
+3. Restart computer
+
+
+STEP 2: CREATE FOLDER
+─────────────────────
+
+Open PowerShell and run:
+
+New-Item -ItemType Directory -Path "C:\mongo-cluster" -Force
+
+
+STEP 3: CREATE FILE
+───────────────────
+
+Create docker-compose.windows.yml in C:\mongo-cluster\ with:
+
+version: '3.8'
+
+networks:
+  mongo-net:
+    driver: bridge
+
+volumes:
+  shard1:
+
+services:
+  shard1:
+    image: mongo:7.0
+    container_name: shard1_secondary
+    command: mongod --shardsvr --replSet shard1rs --bind_ip_all --port 27018
+    volumes:
+      - shard1:/data/db
+    ports:
+      - "27018:27018"
+    networks:
+      - mongo-net
+    restart: always
+
+
+STEP 4: START THE CONTAINER
+────────────────────────────
+
+Open PowerShell in C:\mongo-cluster\ and run:
+
+docker-compose -f docker-compose.windows.yml up -d
+
+
+STEP 5: VERIFY
+──────────────
+
+docker ps
+
+You should see a container running!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         PC 3 (WINDOWS - 172.20.10.6)
+═══════════════════════════════════════════════════════════════════════════════
+
+DO EXACTLY THE SAME AS PC 2!
+
+1. Install Docker Desktop
+2. Create C:\mongo-cluster\
+3. Create docker-compose.windows.yml (SAME FILE)
+4. Run: docker-compose -f docker-compose.windows.yml up -d
+5. Verify: docker ps
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                              SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+PC 1 (Arch Linux):
+  1. Create 3 files (docker-compose.yml, demarrer.sh, tester-failover.sh)
+  2. Run: ./demarrer.sh
+  3. Run: docker exec -it mongos mongosh
+  4. Add PC 2 and PC 3
+
+PC 2 (Windows):
+  1. Install Docker Desktop
+  2. Create C:\mongo-cluster\
+  3. Create docker-compose.windows.yml
+  4. Run: docker-compose -f docker-compose.windows.yml up -d
+
+PC 3 (Windows):
+  Same as PC 2!
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                            QUICK COMMANDS
+═══════════════════════════════════════════════════════════════════════════════
+
+PC 1:
+  ./demarrer.sh                                  # Start cluster
+  docker exec -it mongos mongosh                # Connect to MongoDB
+  docker ps                                      # See containers
+  docker logs -f mongos                         # See logs
+  ./tester-failover.sh                          # Test failover
+
+PC 2 & PC 3 (Windows):
+  docker-compose -f docker-compose.windows.yml up -d    # Start
+  docker ps                                              # See containers
+  docker logs -f shard1_secondary                        # See logs
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                              VERIFY IT WORKS
+═══════════════════════════════════════════════════════════════════════════════
+
+On PC 1, in mongosh:
+
+> rs.status()         # See all 3 servers
+> sh.status()         # See cluster status
+> exit                # Exit mongosh
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                              DONE! 🎉
+═══════════════════════════════════════════════════════════════════════════════
+
+You now have:
+  ✅ MongoDB cluster with 3 servers
+  ✅ Replication enabled
+  ✅ Failover ready
+  ✅ All on the same WiFi network
+
+Start with PC 1, then PC 2, then PC 3!
+
+═══════════════════════════════════════════════════════════════════════════════
